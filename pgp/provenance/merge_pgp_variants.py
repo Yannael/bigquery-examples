@@ -34,6 +34,8 @@ To use this library:
 (3) ssh to the spark master and run the job
     ./bdutil shell
     pyspark --py-files merge_pgp_variants.py
+
+This library could also be used in the context of a Hadoop Streaming job.
 """
 
 import json
