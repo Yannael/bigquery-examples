@@ -28,12 +28,12 @@ To use this script:
 (1) Spin up a spark cluster on Google Compute Engine.  See
     https://groups.google.com/forum/#!topic/gcp-hadoop-announce/EfQms8tK5cE
 
-(2) Ship this script to the spark master
-    gcutil push hadoop-m merge_pgp_variants.py /home/$USER
+(2) Ship this script and the library to the spark master
+    gcutil push hadoop-m spark_merge_pgp_variants.py merge_pgp_variants.py /home/$USER
 
 (3) ssh to the spark master and run the job
     ./bdutil shell
-    spark-submit spark_merge_pgp_variants.py gs://bigquery/export/path gs://output/path
+    spark-submit spark_merge_pgp_variants.py --py-files merge_pgp_variants.py gs://bigquery/export/path gs://output/path
 """
 
 import json
