@@ -58,7 +58,7 @@ def IsSimpleVariant(fields):
   """Determine whether or not the record fields constitute a variant."""
   if "alternate_bases" in fields and fields["alternate_bases"]:
     # It is a variant, not a reference-matching block.  Now, is it "simple"?
-    if "SVTYPE" not in fields:
+    if "SVTYPE" not in fields and "<CGA_CNVWIN>" != fields["alternate_bases"][0]:
       return True
   return False
 
@@ -150,6 +150,7 @@ class VariantMergeTest(unittest.TestCase):
     self.assertTrue(IsSimpleVariant(json.loads(self.var_both_ins_del)))
     self.assertFalse(IsSimpleVariant(json.loads(self.var_sv)))
     self.assertFalse(IsSimpleVariant(json.loads(self.ref_block)))
+    self.assertFalse(IsSimpleVariant(json.loads(self.no_call)))
 
   def testMapRecord(self):
     expected_key = "6:120458771:TA"
@@ -959,6 +960,77 @@ class VariantMergeTest(unittest.TestCase):
 }
 """
 
+    self.no_call = """
+{
+  "contig_name":"7",
+  "start_pos":"47378001",
+  "end_pos":"47378002",
+  "reference_bases":"T",
+  "alternate_bases":[
+    "<CGA_CNVWIN>"
+  ],
+  "AC":[
+
+  ],
+  "CGA_FI":[
+
+  ],
+  "CGA_MEDEL":[
+
+  ],
+  "CGA_MIRB":[
+
+  ],
+  "CGA_PFAM":[
+
+  ],
+  "CGA_RPT":[
+
+  ],
+  "CGA_WINEND":"47380000",
+  "CGA_XR":[
+
+  ],
+  "CIPOS":[
+
+  ],
+  "MEINFO":[
+
+  ],
+  "NS":"1",
+  "call":[
+    {
+      "callset_id":"11785686915021445549-0",
+      "callset_name":"hu775356",
+      "genotype":[
+        -1
+      ],
+      "genotype_likelihood":[
+
+      ],
+      "AD":[
+
+      ],
+      "CGA_CL":1.002,
+      "CGA_CP":"2",
+      "CGA_CT":"=",
+      "CGA_GP":"0.84",
+      "CGA_LS":"496",
+      "CGA_NP":"1.30",
+      "CGA_PS":"45",
+      "CGA_TS":"45",
+      "EHQ":[
+
+      ],
+      "FILTER":true,
+      "HQ":[
+
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
 
 if __name__ == "__main__":
   unittest.main()
