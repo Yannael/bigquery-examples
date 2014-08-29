@@ -38,12 +38,30 @@ To use this library:
 This library could also be used in the context of a Hadoop Streaming job.
 """
 
+import copy
 import json
 import unittest
 
+def FlattenFieldAssociatedWithAlt(fields, field_name, alt_num):
+  if field_name in fields and fields[field_name]:
+    # Change this to be a scalar whose value is the one associated
+    # with the alternate allele we are flattening
+    fields[field_name] = fields[field_name][alt_num - 1]
+  else:
+    # The field is empty, just nuke it
+    fields.pop(field_name, None)
 
-def CleanRecord(fields):
-  """Remove VCF info key/value pairs that are not useful in this context."""
+    
+def SimplifyRecord(fields, alt_num=None):
+  if "alternate_bases" in fields and fields["alternate_bases"]:
+    if len(fields["alternate_bases"]) > 1 and alt_num is None:
+      raise Exception("Attempting to flatten a record with multiple alternate " +
+                      "alleles with no specific alternate to use specified.")
+    if alt_num is None:
+      # There is only one alternate, use its index
+      alt_num = 1
+
+  # Remove VCF info key/value pairs that are not useful in this context.
   # INFO=<ID=NS,Number=1,Type=Integer,Description="Number of Samples With Data">
   fields.pop("NS", None)
   # INFO=<ID=AN,Number=1,Type=Integer,Description="Total number of alleles in called genotypes">
@@ -51,6 +69,34 @@ def CleanRecord(fields):
   # INFO=<ID=AC,Number=A,Type=Integer,Description="Allele count in genotypes, for each ALT allele">
   fields.pop("AC", None)
 
+  # Flatten the alternate_bases field and the associated INFO fields of
+  # type Number=A indicating the field has one value per alternate
+  # allele.
+  FlattenFieldAssociatedWithAlt(fields, "alternate_bases", alt_num)
+  ##INFO=<ID=CGA_XR,Number=A,Type=String,Description="Per-ALT external database reference (dbSNP, COSMIC, etc)">
+  FlattenFieldAssociatedWithAlt(fields, "CGA_XR", alt_num)
+  ##INFO=<ID=AF,Number=A,Type=String,Description="Allele frequency, or &-separated frequencies for complex variants (in latter, '?' designates unknown parts)">
+  FlattenFieldAssociatedWithAlt(fields, "AF", alt_num)
+  ##INFO=<ID=CGA_FI,Number=A,Type=String,Description="Functional impact annotation">
+  FlattenFieldAssociatedWithAlt(fields, "CGA_FI", alt_num)
+  ##INFO=<ID=CGA_BNDG,Number=A,Type=String,Description="Transcript name and strand of genes containing breakend">
+  FlattenFieldAssociatedWithAlt(fields, "CGA_BNDG", alt_num)
+  ##INFO=<ID=CGA_BNDGO,Number=A,Type=String,Description="Transcript name and strand of genes containing mate breakend">
+  FlattenFieldAssociatedWithAlt(fields, "CGA_BNDGO", alt_num)
+
+  # Re-write the genotypes
+  for call in fields["call"]:
+    for idx in range(0, len(call["genotype"])):
+      if 0 < call["genotype"][idx]:
+        if alt_num == call["genotype"][idx]:
+          # genotypes corresponding to _this_ alternate are now all '1'
+          call["genotype"][idx] = 1
+        else:
+          # genotypes corresponding to any other alternate are now '2'
+          call["genotype"][idx] = 2
+
+  # TODO(deflaux): rewrite the genotype likelihoods
+          
   return fields
 
 
@@ -64,83 +110,52 @@ def IsSimpleVariant(fields):
 
 
 def MapRecord(fields):
-  """Emit a key/value pair for the record.
+  """Emit one or more key/value pairs for the record.
   """
-  if IsSimpleVariant(fields):
-    # Note: the key does not include alternate_bases because that's
-    # what we want to group in the reduce step.  The key also does not
-    # include 'end' because in this dataset its only set for
-    # structural variants and reference-matching blocks, both of which
-    # we emit directly as-is from this step.
-    key = "%s:%s:%s" % (fields["contig_name"],
-                        fields["start_pos"],
-                        fields["reference_bases"])
-  else:
-    # Note: this is equivalent to the Variant Store import key and
-    # therefore should be unique
-    alt = ""
-    end = ""
-    if "alternate_bases" in fields and fields["alternate_bases"]:
-      alt = ",".join(fields["alternate_bases"])
-    if "END" in fields:
-      end = fields["END"]
-    elif "end" in fields:
-      end = fields["end"]
+  alts = [""]
+  if "alternate_bases" in fields and fields["alternate_bases"]:
+    alts = fields["alternate_bases"]
+
+  end = ""
+  if "END" in fields:
+    end = fields["END"]
+  elif "end" in fields:
+    end = fields["end"]
+
+  pairs = []
+  for idx in range(0, len(alts)):  
     key = "%s:%s:%s:%s:%s" % (fields["contig_name"],
                               fields["start_pos"],
                               fields["reference_bases"],
-                              alt,
+                              alts[idx],
                               end)
-
-  return (key, fields)
+    if 1 == len(alts):
+      pairs.append( (key, SimplifyRecord(fields)) )
+    else:
+      pairs.append( (key, SimplifyRecord(copy.deepcopy(fields), alt_num=idx+1)) )
+    
+  return pairs
 
 
 def FoldByKeyVariant(a, b):
-  """Naively merge two 'simple' variant records with the same key."""
+  """Naively merge the calls within two variant records with the same key."""
   # Handle zero value
   if not a: return b
   if not b: return a
 
-  if not (IsSimpleVariant(a) and IsSimpleVariant(b)):
-    raise Exception("Attempting to merge non-simple variants: "
-                    + str(a) + str(b))
+  # TODO: to make this commutative and associative for any data we
+  # might see, fail if any INFO values differ between the two records
+  # we are merging.  But be pragmatic for now, variant store import
+  # can also silently drops values that differ in info fields of
+  # merged record.
 
-  # TODO(deflaux): this isn't actually commutative and associative
-  # yet.  We need to sort alternate_bases alphabetically and re-write
-  # the genotype numbers for both the src and dest as needed for it to
-  # be so.
+  # Note: The ordering of calls within the record is not
+  # meaningful, not bothering to sort them here for the value of that
+  # field to be commutative and associative from this function.
+  
+  a["call"].extend(b["call"])
 
-  # Choose the direction in which to merge (but either way would be fine)
-  if len(a["alternate_bases"]) < len(b["alternate_bases"]):
-    src = a
-    dest = b
-  else:
-    src = b
-    dest = a
-
-  # Populate our alt number mapping
-  genotype_map = [0]
-  for alt in src["alternate_bases"]:
-    if alt not in dest["alternate_bases"]:
-      dest["alternate_bases"].append(alt)
-    genotype_map.append(dest["alternate_bases"].index(alt) + 1)
-
-  # Re-write the genotype numbers
-  for call in src["call"]:
-    for idx in range(0, len(call["genotype"])):
-      if 0 < call["genotype"][idx]:
-        call["genotype"][idx] = genotype_map[call["genotype"][idx]]
-
-  # TODO(deflaux): also re-write alt specific INFO fields such as
-  # CGA_XR or discard them.
-
-  # TODO(deflaux): check that any variant level values we are throwing
-  # out match those that remain
-
-  # Now merge the calls
-  dest["call"].extend(src["call"])
-
-  return dest
+  return a
 
 
 class VariantMergeTest(unittest.TestCase):
@@ -150,42 +165,91 @@ class VariantMergeTest(unittest.TestCase):
     self.assertFalse(IsSimpleVariant(json.loads(self.ref_block)))
     self.assertFalse(IsSimpleVariant(json.loads(self.no_call)))
 
+  def testSimplifyRecord(self):
+    self.assertDictEqual(json.loads(self.var_ins_simplified), 
+                         SimplifyRecord(json.loads(self.var_ins)))
+    
+    self.assertDictEqual(json.loads(self.var_del_simplified), 
+                         SimplifyRecord(json.loads(self.var_del)))
+
+    # This is the 1/2 genotype record
+    self.assertRaises(Exception, SimplifyRecord, json.loads(self.var_both_ins_del))
+    self.assertDictEqual(json.loads(self.var_both_ins_simplified), 
+                         SimplifyRecord(json.loads(self.var_both_ins_del),
+                                        alt_num=1))
+    self.assertDictEqual(json.loads(self.var_both_del_simplified), 
+                         SimplifyRecord(json.loads(self.var_both_ins_del),
+                                        alt_num=2))
+
   def testMapRecord(self):
-    expected_key = "6:120458771:TA"
-    for var in [self.var_both_ins_del, self.var_ins, self.var_del]:
-      (key, value) = MapRecord(json.loads(var))
-      self.assertEqual(expected_key, key)
-      self.assertDictEqual(CleanRecord(json.loads(var)), value)
+    pairs = MapRecord(json.loads(self.var_ins_encoded_differently))
+    self.assertEqual(1, len(pairs))
+    self.assertEqual("6:120458771:T:TA:", pairs[0][0])
 
-    (key, value) = MapRecord(json.loads(self.var_ins_encoded_differently))
-    self.assertEqual("6:120458771:T", key)
-    self.assertDictEqual(CleanRecord(json.loads(
-        self.var_ins_encoded_differently)), value)
+    pairs = MapRecord(json.loads(self.var_del_encoded_differently))
+    self.assertEqual(1, len(pairs))
+    self.assertEqual("6:120458771:TAAAAA:TAAAA:", pairs[0][0])
 
-    (key, value) = MapRecord(json.loads(self.var_del_encoded_differently))
-    self.assertEqual("6:120458771:TAAAAA", key)
-    self.assertDictEqual(CleanRecord(json.loads(
-        self.var_del_encoded_differently)), value)
+    pairs = MapRecord(json.loads(self.var_sv))
+    self.assertEqual(1, len(pairs))
+    self.assertEqual("11:132083603:G:GN[11:132084035[:", pairs[0][0])
 
-    (key, value) = MapRecord(json.loads(self.var_sv))
-    self.assertEqual("11:132083603:G:GN[11:132084035[:", key)
-    self.assertDictEqual(CleanRecord(json.loads(self.var_sv)), value)
+    pairs = MapRecord(json.loads(self.ref_block))
+    self.assertEqual(1, len(pairs))
+    self.assertEqual("2:77608523:N::77608540", pairs[0][0])
 
-    (key, value) = MapRecord(json.loads(self.ref_block))
-    self.assertEqual("2:77608523:N::77608540", key)
-    self.assertDictEqual(CleanRecord(json.loads(self.ref_block)), value)
+  def testMapAndMergeRecords(self):
+    pairs = MapRecord(json.loads(self.var_ins))
+    self.assertEqual(1, len(pairs))
+    self.assertEqual("6:120458771:TA:TAA:", pairs[0][0])
+    self.assertDictEqual(json.loads(self.var_ins_simplified), 
+                         pairs[0][1])
+    var_ins = pairs[0][1]
+    
+    pairs = MapRecord(json.loads(self.var_del))
+    self.assertEqual(1, len(pairs))
+    self.assertEqual("6:120458771:TA:T:", pairs[0][0])
+    self.assertDictEqual(json.loads(self.var_del_simplified), 
+                         pairs[0][1])
+    var_del = pairs[0][1]
 
-  def testFoldByKeyVariant(self):
-    merged_var = None
-    for var in [self.var_both_ins_del, self.var_ins, self.var_del]:
-      if merged_var is None:
-        merged_var = json.loads(var)
-      else:
-        merged_var = FoldByKeyVariant(json.loads(var), merged_var)
+    # This is the 1/2 genotype record
+    pairs = MapRecord(json.loads(self.var_both_ins_del))
+    self.assertEqual(2, len(pairs))
+    self.assertEqual("6:120458771:TA:TAA:", pairs[0][0])
+    self.assertDictEqual(json.loads(self.var_both_ins_simplified), 
+                         pairs[0][1])
+    het_alt_var_ins = pairs[0][1]
 
-    self.assertDictEqual(json.loads(self.var_merged), merged_var)
+    self.assertEqual("6:120458771:TA:T:", pairs[1][0])
+    self.assertDictEqual(json.loads(self.var_both_del_simplified), 
+                         pairs[1][1])
+    het_alt_var_del = pairs[1][1]
+
+    # Note: deep copy these since we're using them in two separate
+    # tests and FoldByKeyVariant modified the dictionaries in place.
+    self.assertDictEqual(json.loads(self.var_ins_merged),
+                         FoldByKeyVariant(copy.deepcopy(het_alt_var_ins),
+                                          copy.deepcopy(var_ins)))
+    self.assertDictEqual(json.loads(self.var_del_merged),
+                         FoldByKeyVariant(copy.deepcopy(het_alt_var_del), 
+                                          copy.deepcopy(var_del)))
+
+    # Check this other direction.  In practice its not worth sorting
+    # them because the order of calls has no meaning.
+    self.assertDictEqual(self.sort_calls(json.loads(self.var_ins_merged)),
+                         self.sort_calls(FoldByKeyVariant(var_ins, het_alt_var_ins)))
+    self.assertDictEqual(self.sort_calls(json.loads(self.var_del_merged)),
+                         self.sort_calls(FoldByKeyVariant(var_del, het_alt_var_del)))
+
+  def sort_calls(self, record):
+    record["call"] = sorted(record["call"], key=lambda k: k["callset_id"]) 
+    return record
+
 
   def setUp(self):
+    self.maxDiff = None
+
     self.var_both_ins_del = """
 {
   "contig_name":"6",
@@ -216,6 +280,106 @@ class VariantMergeTest(unittest.TestCase):
       "genotype":[
         1,
         2
+      ],
+      "genotype_likelihood":[
+        -50,
+        -50,
+        -50,
+        -50,
+        0,
+        -50
+      ],
+      "AD":[
+        "9",
+        "6"
+      ],
+      "CGA_RDP":"3",
+      "DP":"24",
+      "EHQ":[
+        "49",
+        "49"
+      ],
+      "FILTER":true,
+      "FT":"PASS",
+      "GQ":"50",
+      "HQ":[
+        "50",
+        "50"
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
+
+    self.var_both_ins_simplified = """
+{
+  "contig_name":"6",
+  "start_pos":"120458771",
+  "end_pos":"120458773",
+  "reference_bases":"TA",
+  "alternate_bases":"TAA",
+  "CGA_RPT":[
+    "A-rich|Low_complexity|20.4"
+  ],
+  "CGA_XR":"dbsnp.130|rs71806210",
+  "call":[
+    {
+      "callset_id":"7122130836277736291-2",
+      "callset_name":"huD103CC",
+      "genotype":[
+        1,
+        2
+      ],
+      "genotype_likelihood":[
+        -50,
+        -50,
+        -50,
+        -50,
+        0,
+        -50
+      ],
+      "AD":[
+        "9",
+        "6"
+      ],
+      "CGA_RDP":"3",
+      "DP":"24",
+      "EHQ":[
+        "49",
+        "49"
+      ],
+      "FILTER":true,
+      "FT":"PASS",
+      "GQ":"50",
+      "HQ":[
+        "50",
+        "50"
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
+
+    self.var_both_del_simplified = """
+{
+  "contig_name":"6",
+  "start_pos":"120458771",
+  "end_pos":"120458773",
+  "reference_bases":"TA",
+  "alternate_bases":"T",
+  "CGA_RPT":[
+    "A-rich|Low_complexity|20.4"
+  ],
+  "CGA_XR":"dbsnp.129|rs61212177",
+  "call":[
+    {
+      "callset_id":"7122130836277736291-2",
+      "callset_name":"huD103CC",
+      "genotype":[
+        2,
+        1
       ],
       "genotype_likelihood":[
         -50,
@@ -366,6 +530,115 @@ class VariantMergeTest(unittest.TestCase):
 }
 """
 
+    self.var_del_simplified = """
+{
+  "contig_name":"6",
+  "start_pos":"120458771",
+  "end_pos":"120458773",
+  "reference_bases":"TA",
+  "alternate_bases":"T",
+  "CGA_RPT":[
+    "A-rich|Low_complexity|20.4"
+  ],
+  "CGA_XR":"dbsnp.129|rs61212177",
+  "call":[
+    {
+      "callset_id":"7122130836277736291-0",
+      "callset_name":"hu939B7C",
+      "genotype":[
+        1,
+        -1
+      ],
+      "phaseset":"120458771",
+      "genotype_likelihood":[
+        -125,
+        0,
+        0
+      ],
+      "AD":[
+        "15",
+        "."
+      ],
+      "CGA_RDP":"4",
+      "DP":"19",
+      "EHQ":[
+        "114",
+        "."
+      ],
+      "FILTER":true,
+      "FT":"PASS",
+      "HQ":[
+        "125",
+        "."
+      ],
+      "QUAL":0
+    },
+    {
+      "callset_id":"7122130836277736291-1",
+      "callset_name":"hu553620",
+      "genotype":[
+        1,
+        1
+      ],
+      "genotype_likelihood":[
+        -87,
+        -11,
+        0
+      ],
+      "AD":[
+        "8",
+        "8"
+      ],
+      "CGA_RDP":"2",
+      "DP":"10",
+      "EHQ":[
+        "87",
+        "11"
+      ],
+      "FILTER":true,
+      "FT":"VQLOW",
+      "GQ":"11",
+      "HQ":[
+        "87",
+        "11"
+      ],
+      "QUAL":0
+    },
+    {
+      "callset_id":"7122130836277736291-7",
+      "callset_name":"hu68929D",
+      "genotype":[
+        1,
+        0
+      ],
+      "genotype_likelihood":[
+        -37,
+        0,
+        -52
+      ],
+      "AD":[
+        "8",
+        "10"
+      ],
+      "CGA_RDP":"10",
+      "DP":"18",
+      "EHQ":[
+        "57",
+        "52"
+      ],
+      "FILTER":true,
+      "FT":"VQLOW",
+      "GQ":"37",
+      "HQ":[
+        "37",
+        "52"
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
+
     self.var_ins = """
 {
   "contig_name":"6",
@@ -386,6 +659,52 @@ class VariantMergeTest(unittest.TestCase):
     "dbsnp.130|rs71806210"
   ],
   "NS":"1",
+  "call":[
+    {
+      "callset_id":"7122130836277736291-97",
+      "callset_name":"hu57A769",
+      "genotype":[
+        1,
+        -1
+      ],
+      "genotype_likelihood":[
+        -37,
+        0,
+        0
+      ],
+      "AD":[
+        "2",
+        "."
+      ],
+      "CGA_RDP":"4",
+      "DP":"12",
+      "EHQ":[
+        "37",
+        "."
+      ],
+      "FILTER":true,
+      "FT":"VQLOW",
+      "HQ":[
+        "37",
+        "."
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
+
+    self.var_ins_simplified = """
+{
+  "contig_name":"6",
+  "start_pos":"120458771",
+  "end_pos":"120458773",
+  "reference_bases":"TA",
+  "alternate_bases":"TAA",
+  "CGA_RPT":[
+    "A-rich|Low_complexity|20.4"
+  ],
+  "CGA_XR":"dbsnp.130|rs71806210",
   "call":[
     {
       "callset_id":"7122130836277736291-97",
@@ -631,190 +950,6 @@ class VariantMergeTest(unittest.TestCase):
 }
 """
 
-    self.var_merged = """
-{
-  "AC":[
-    "1",
-    "1"
-  ],
-  "NS":"1",
-  "reference_bases":"TA",
-  "alternate_bases":[
-    "TAA",
-    "T"
-  ],
-  "CGA_RPT":[
-    "A-rich|Low_complexity|20.4"
-  ],
-  "AN":"2",
-  "CGA_XR":[
-    "dbsnp.130|rs71806210",
-    "dbsnp.129|rs61212177"
-  ],
-  "call":[
-    {
-      "callset_id":"7122130836277736291-2",
-      "CGA_RDP":"3",
-      "FT":"PASS",
-      "AD":[
-        "9",
-        "6"
-      ],
-      "GQ":"50",
-      "EHQ":[
-        "49",
-        "49"
-      ],
-      "HQ":[
-        "50",
-        "50"
-      ],
-      "FILTER":true,
-      "QUAL":0,
-      "callset_name":"huD103CC",
-      "genotype_likelihood":[
-        -50,
-        -50,
-        -50,
-        -50,
-        0,
-        -50
-      ],
-      "DP":"24",
-      "genotype":[
-        1,
-        2
-      ]
-    },
-    {
-      "callset_id":"7122130836277736291-97",
-      "CGA_RDP":"4",
-      "FT":"VQLOW",
-      "AD":[
-        "2",
-        "."
-      ],
-      "EHQ":[
-        "37",
-        "."
-      ],
-      "HQ":[
-        "37",
-        "."
-      ],
-      "FILTER":true,
-      "QUAL":0,
-      "callset_name":"hu57A769",
-      "genotype_likelihood":[
-        -37,
-        0,
-        0
-      ],
-      "DP":"12",
-      "genotype":[
-        1,
-        -1
-      ]
-    },
-    {
-      "callset_id":"7122130836277736291-0",
-      "CGA_RDP":"4",
-      "FT":"PASS",
-      "AD":[
-        "15",
-        "."
-      ],
-      "phaseset":"120458771",
-      "EHQ":[
-        "114",
-        "."
-      ],
-      "HQ":[
-        "125",
-        "."
-      ],
-      "FILTER":true,
-      "QUAL":0,
-      "callset_name":"hu939B7C",
-      "genotype_likelihood":[
-        -125,
-        0,
-        0
-      ],
-      "DP":"19",
-      "genotype":[
-        2,
-        -1
-      ]
-    },
-    {
-      "callset_id":"7122130836277736291-1",
-      "CGA_RDP":"2",
-      "FT":"VQLOW",
-      "AD":[
-        "8",
-        "8"
-      ],
-      "GQ":"11",
-      "EHQ":[
-        "87",
-        "11"
-      ],
-      "HQ":[
-        "87",
-        "11"
-      ],
-      "FILTER":true,
-      "QUAL":0,
-      "callset_name":"hu553620",
-      "genotype_likelihood":[
-        -87,
-        -11,
-        0
-      ],
-      "DP":"10",
-      "genotype":[
-        2,
-        2
-      ]
-    },
-    {
-      "callset_id":"7122130836277736291-7",
-      "CGA_RDP":"10",
-      "FT":"VQLOW",
-      "AD":[
-        "8",
-        "10"
-      ],
-      "GQ":"37",
-      "EHQ":[
-        "57",
-        "52"
-      ],
-      "HQ":[
-        "37",
-        "52"
-      ],
-      "FILTER":true,
-      "QUAL":0,
-      "callset_name":"hu68929D",
-      "genotype_likelihood":[
-        -37,
-        0,
-        -52
-      ],
-      "DP":"18",
-      "genotype":[
-        2,
-        0
-      ]
-    }
-  ],
-  "contig_name":"6",
-  "start_pos":"120458771",
-  "end_pos":"120458773"
-}
-"""
 
     self.var_sv = """
 {
@@ -1023,6 +1158,229 @@ class VariantMergeTest(unittest.TestCase):
       "FILTER":true,
       "HQ":[
 
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
+
+    self.var_ins_merged = """
+{
+  "contig_name":"6",
+  "start_pos":"120458771",
+  "end_pos":"120458773",
+  "reference_bases":"TA",
+  "alternate_bases":"TAA",
+  "CGA_RPT":[
+    "A-rich|Low_complexity|20.4"
+  ],
+  "CGA_XR":"dbsnp.130|rs71806210",
+  "call":[
+    {
+      "callset_id":"7122130836277736291-2",
+      "callset_name":"huD103CC",
+      "genotype":[
+        1,
+        2
+      ],
+      "genotype_likelihood":[
+        -50,
+        -50,
+        -50,
+        -50,
+        0,
+        -50
+      ],
+      "AD":[
+        "9",
+        "6"
+      ],
+      "CGA_RDP":"3",
+      "DP":"24",
+      "EHQ":[
+        "49",
+        "49"
+      ],
+      "FILTER":true,
+      "FT":"PASS",
+      "GQ":"50",
+      "HQ":[
+        "50",
+        "50"
+      ],
+      "QUAL":0
+    },
+        {
+      "callset_id":"7122130836277736291-97",
+      "callset_name":"hu57A769",
+      "genotype":[
+        1,
+        -1
+      ],
+      "genotype_likelihood":[
+        -37,
+        0,
+        0
+      ],
+      "AD":[
+        "2",
+        "."
+      ],
+      "CGA_RDP":"4",
+      "DP":"12",
+      "EHQ":[
+        "37",
+        "."
+      ],
+      "FILTER":true,
+      "FT":"VQLOW",
+      "HQ":[
+        "37",
+        "."
+      ],
+      "QUAL":0
+    }
+  ]
+}
+"""
+
+    self.var_del_merged = """
+{
+  "contig_name":"6",
+  "start_pos":"120458771",
+  "end_pos":"120458773",
+  "reference_bases":"TA",
+  "alternate_bases":"T",
+  "CGA_RPT":[
+    "A-rich|Low_complexity|20.4"
+  ],
+  "CGA_XR":"dbsnp.129|rs61212177",
+  "call":[
+    {
+      "callset_id":"7122130836277736291-2",
+      "callset_name":"huD103CC",
+      "genotype":[
+        2,
+        1
+      ],
+      "genotype_likelihood":[
+        -50,
+        -50,
+        -50,
+        -50,
+        0,
+        -50
+      ],
+      "AD":[
+        "9",
+        "6"
+      ],
+      "CGA_RDP":"3",
+      "DP":"24",
+      "EHQ":[
+        "49",
+        "49"
+      ],
+      "FILTER":true,
+      "FT":"PASS",
+      "GQ":"50",
+      "HQ":[
+        "50",
+        "50"
+      ],
+      "QUAL":0
+    },
+        {
+      "callset_id":"7122130836277736291-0",
+      "callset_name":"hu939B7C",
+      "genotype":[
+        1,
+        -1
+      ],
+      "phaseset":"120458771",
+      "genotype_likelihood":[
+        -125,
+        0,
+        0
+      ],
+      "AD":[
+        "15",
+        "."
+      ],
+      "CGA_RDP":"4",
+      "DP":"19",
+      "EHQ":[
+        "114",
+        "."
+      ],
+      "FILTER":true,
+      "FT":"PASS",
+      "HQ":[
+        "125",
+        "."
+      ],
+      "QUAL":0
+    },
+    {
+      "callset_id":"7122130836277736291-1",
+      "callset_name":"hu553620",
+      "genotype":[
+        1,
+        1
+      ],
+      "genotype_likelihood":[
+        -87,
+        -11,
+        0
+      ],
+      "AD":[
+        "8",
+        "8"
+      ],
+      "CGA_RDP":"2",
+      "DP":"10",
+      "EHQ":[
+        "87",
+        "11"
+      ],
+      "FILTER":true,
+      "FT":"VQLOW",
+      "GQ":"11",
+      "HQ":[
+        "87",
+        "11"
+      ],
+      "QUAL":0
+    },
+    {
+      "callset_id":"7122130836277736291-7",
+      "callset_name":"hu68929D",
+      "genotype":[
+        1,
+        0
+      ],
+      "genotype_likelihood":[
+        -37,
+        0,
+        -52
+      ],
+      "AD":[
+        "8",
+        "10"
+      ],
+      "CGA_RDP":"10",
+      "DP":"18",
+      "EHQ":[
+        "57",
+        "52"
+      ],
+      "FILTER":true,
+      "FT":"VQLOW",
+      "GQ":"37",
+      "HQ":[
+        "37",
+        "52"
       ],
       "QUAL":0
     }
