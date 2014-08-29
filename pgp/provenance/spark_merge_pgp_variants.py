@@ -45,19 +45,19 @@ from pyspark import SparkContext
 
 import merge_pgp_variants
 
-def emit_non_simple_variants(input_lines):
-  non_simple_records = input_lines.map(json.loads).filter(lambda r: not merge_pgp_variants.IsSimpleVariant(r)).map(merge_pgp_variants.SimplifyRecord).map(json.dumps)
+def emit_empty_alternate_records(input_lines):
+  records = input_lines.map(json.loads).filter(lambda r: not merge_pgp_variants.HasAlternate(r)).map(merge_pgp_variants.SimplifyRecord).map(json.dumps)
 
-  non_simple_records.saveAsTextFile(sys.argv[2] + "_non-simple")
+  records.saveAsTextFile(sys.argv[2] + "_null_alternate_bases")
 
-def emit_merged_simple_variants(input_lines):
-  records = input_lines.map(json.loads).filter(merge_pgp_variants.IsSimpleVariant)
+def emit_merged_variants(input_lines):
+  records = input_lines.map(json.loads).filter(merge_pgp_variants.HasAlternate)
 
   pairs = records.flatMap(merge_pgp_variants.MapRecord)
   merged_records = pairs.reduceByKey(merge_pgp_variants.FoldByKeyVariant)
   output_lines = merged_records.map(lambda r: json.dumps(r[1]))
 
-  output_lines.saveAsTextFile(sys.argv[2] + "_simple")
+  output_lines.saveAsTextFile(sys.argv[2] + "_variants")
 
 if __name__ == "__main__":
   if len(sys.argv) != 3:
@@ -69,8 +69,11 @@ if __name__ == "__main__":
 
   input_lines = sc.textFile(sys.argv[1], 1)
 
-  emit_merged_simple_variants(input_lines)
-  emit_non_simple_variants(input_lines)
+  emit_merged_variants(input_lines)
+
+  # This will emit reference-matching block records and any DELs where
+  # alternate_bases is null.
+  emit_empty_alternate_records(input_lines)
 
   sc.stop()
 

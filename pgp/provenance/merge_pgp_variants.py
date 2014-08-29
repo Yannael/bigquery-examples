@@ -43,22 +43,29 @@ import json
 import unittest
 
 def FlattenFieldAssociatedWithAlt(fields, field_name, alt_num):
+  """Change array values to scalar values.
+
+  Change this array to instead be a scalar whose value is the one
+  associated with the alternate allele we are flattening.
+  """
   if field_name in fields and fields[field_name]:
-    # Change this to be a scalar whose value is the one associated
-    # with the alternate allele we are flattening
     fields[field_name] = fields[field_name][alt_num - 1]
   else:
-    # The field is empty, just nuke it
+    # The field is empty, just nuke it.
     fields.pop(field_name, None)
 
     
 def SimplifyRecord(fields, alt_num=None):
+  """Modify our record to be in a form easier to work with in BigQuery.
+
+  Specifically drop some fields and flatten any associated with alternate_bases.  
+  """
   if "alternate_bases" in fields and fields["alternate_bases"]:
     if len(fields["alternate_bases"]) > 1 and alt_num is None:
       raise Exception("Attempting to flatten a record with multiple alternate " +
                       "alleles with no specific alternate to use specified.")
     if alt_num is None:
-      # There is only one alternate, use its index
+      # There is only one alternate, use its index.
       alt_num = 1
 
   # Remove VCF info key/value pairs that are not useful in this context.
@@ -84,7 +91,7 @@ def SimplifyRecord(fields, alt_num=None):
   ##INFO=<ID=CGA_BNDGO,Number=A,Type=String,Description="Transcript name and strand of genes containing mate breakend">
   FlattenFieldAssociatedWithAlt(fields, "CGA_BNDGO", alt_num)
 
-  # Re-write the genotypes
+  # Re-write the genotypes and genotype likelihoods.
   for call in fields["call"]:
     for idx in range(0, len(call["genotype"])):
       if 0 < call["genotype"][idx]:
@@ -92,25 +99,42 @@ def SimplifyRecord(fields, alt_num=None):
           # genotypes corresponding to _this_ alternate are now all '1'
           call["genotype"][idx] = 1
         else:
-          # genotypes corresponding to any other alternate are now '2'
+          # genotypes corresponding to _any_other_ alternate are now '2'
           call["genotype"][idx] = 2
+    if 2 == alt_num:
+      # We have a 1/2 record we are re-writing. From the spec "for
+      # triallelic sites the ordering is: AA,AB,BB,AC,BC,CC" so the
+      # new ordering should be: AA, AC, CC, AB, BC, BB.
+      gl = [
+        call["genotype_likelihood"][0],
+        call["genotype_likelihood"][3],
+        call["genotype_likelihood"][5],
+        call["genotype_likelihood"][1],
+        call["genotype_likelihood"][4],
+        call["genotype_likelihood"][2],
+        ]
+      call["genotype_likelihood"] = gl
+    elif 2 < alt_num:
+      # We don't actually have any of these in the PGP data, but adding
+      # a check here to be on the safe side.
+      raise Exception("Attempting to expand genotype for a record that " +
+                      "is more than trialleic.")
 
-  # TODO(deflaux): rewrite the genotype likelihoods
-          
   return fields
 
 
-def IsSimpleVariant(fields):
-  """Determine whether or not the record fields constitute a variant."""
+def HasAlternate(fields):
   if "alternate_bases" in fields and fields["alternate_bases"]:
-    # It is a variant, not a reference-matching block.  Now, is it "simple"?
-    if "SVTYPE" not in fields and "<CGA_CNVWIN>" != fields["alternate_bases"][0]:
-      return True
+    return True
   return False
 
 
 def MapRecord(fields):
   """Emit one or more key/value pairs for the record.
+
+  Here we are using the same key as the Variant Store import _expect_
+  that we use one value from alternate_bases and emit multiple records
+  if alternate_bases has more than one value.
   """
   alts = [""]
   if "alternate_bases" in fields and fields["alternate_bases"]:
@@ -159,11 +183,11 @@ def FoldByKeyVariant(a, b):
 
 
 class VariantMergeTest(unittest.TestCase):
-  def testIsSimpleVariant(self):
-    self.assertTrue(IsSimpleVariant(json.loads(self.var_both_ins_del)))
-    self.assertFalse(IsSimpleVariant(json.loads(self.var_sv)))
-    self.assertFalse(IsSimpleVariant(json.loads(self.ref_block)))
-    self.assertFalse(IsSimpleVariant(json.loads(self.no_call)))
+  def testHasAlternate(self):
+    self.assertTrue(HasAlternate(json.loads(self.var_both_ins_del)))
+    self.assertTrue(HasAlternate(json.loads(self.var_sv)))
+    self.assertTrue(HasAlternate(json.loads(self.no_call)))
+    self.assertFalse(HasAlternate(json.loads(self.ref_block)))
 
   def testSimplifyRecord(self):
     self.assertDictEqual(json.loads(self.var_ins_simplified), 
@@ -282,12 +306,12 @@ class VariantMergeTest(unittest.TestCase):
         2
       ],
       "genotype_likelihood":[
-        -50,
-        -50,
-        -50,
-        -50,
         0,
-        -50
+        1,
+        2,
+        3,
+        4,
+        5
       ],
       "AD":[
         "9",
@@ -332,12 +356,12 @@ class VariantMergeTest(unittest.TestCase):
         2
       ],
       "genotype_likelihood":[
-        -50,
-        -50,
-        -50,
-        -50,
         0,
-        -50
+        1,
+        2,
+        3,
+        4,
+        5
       ],
       "AD":[
         "9",
@@ -382,12 +406,12 @@ class VariantMergeTest(unittest.TestCase):
         1
       ],
       "genotype_likelihood":[
-        -50,
-        -50,
-        -50,
-        -50,
         0,
-        -50
+        3,
+        5,
+        1,
+        4,
+        2
       ],
       "AD":[
         "9",
@@ -1185,12 +1209,12 @@ class VariantMergeTest(unittest.TestCase):
         2
       ],
       "genotype_likelihood":[
-        -50,
-        -50,
-        -50,
-        -50,
         0,
-        -50
+        1,
+        2,
+        3,
+        4,
+        5
       ],
       "AD":[
         "9",
@@ -1265,12 +1289,12 @@ class VariantMergeTest(unittest.TestCase):
         1
       ],
       "genotype_likelihood":[
-        -50,
-        -50,
-        -50,
-        -50,
         0,
-        -50
+        3,
+        5,
+        1,
+        4,
+        2
       ],
       "AD":[
         "9",
