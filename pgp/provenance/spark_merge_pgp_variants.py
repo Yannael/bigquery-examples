@@ -33,7 +33,15 @@ To use this script:
 
 (3) ssh to the spark master and run the job
     ./bdutil shell
-    spark-submit spark_merge_pgp_variants.py --py-files merge_pgp_variants.py gs://bigquery/export/path gs://output/path
+    spark-submit spark_merge_pgp_variants.py --py-files merge_pgp_variants.py \
+    gs://bigquery/export/path gs://output/path
+
+Note: to run this job on the full set of data, depending upon Spark version and hardware resources
+within the spark cluster, additional configuration similar to the following may be needed:    
+    export SPARK_DRIVER_MEMORY=20G ; echo spark.default.parallelism=1024 > ~/spark.props; \
+    echo spark.shuffle.spill=true >> ~/spark.props; echo spark.shuffle.consolidate=true >> ~/spark.props; \
+    spark-submit --properties-file ~/spark.props spark_merge_pgp_variants.py --py-files merge_pgp_variants.py 
+    gs://bigquery/export/path gs://output/path
 """
 
 import json
