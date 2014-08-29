@@ -66,8 +66,6 @@ def IsSimpleVariant(fields):
 def MapRecord(fields):
   """Emit a key/value pair for the record.
   """
-  fields = CleanRecord(fields)
-
   if IsSimpleVariant(fields):
     # Note: the key does not include alternate_bases because that's
     # what we want to group in the reduce step.  The key also does not

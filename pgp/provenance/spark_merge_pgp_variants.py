@@ -43,6 +43,19 @@ from pyspark import SparkContext
 
 import merge_pgp_variants
 
+def emit_non_simple_variants(input_lines):
+  non_simple_records = input_lines.map(json.loads).filter(lambda r: not merge_pgp_variants.IsSimpleVariant(r)).map(merge_pgp_variants.CleanRecord).map(json.dumps)
+
+  non_simple_records.saveAsTextFile(sys.argv[2] + "_non-simple")
+
+def emit_merged_simple_variants(input_lines):
+  records = input_lines.map(json.loads).filter(merge_pgp_variants.IsSimpleVariant).map(merge_pgp_variants.CleanRecord)
+
+  pairs = records.map(merge_pgp_variants.MapRecord)
+  merged_records = pairs.reduceByKey(merge_pgp_variants.FoldByKeyVariant)
+  output_lines = merged_records.map(lambda r: json.dumps(r[1]))
+
+  output_lines.saveAsTextFile(sys.argv[2] + "_simple")
 
 if __name__ == "__main__":
   if len(sys.argv) != 3:
@@ -53,11 +66,8 @@ if __name__ == "__main__":
   sc = SparkContext(appName="PGPVariantMerge")
 
   input_lines = sc.textFile(sys.argv[1], 1)
-  records = input_lines.map(json.loads)
-  pairs = records.map(merge_pgp_variants.MapRecord)
-  merged_records = pairs.reduceByKey(merge_pgp_variants.FoldByKeyVariant)
-  output_lines = merged_records.map(lambda r: json.dumps(r[1]))
 
-  output_lines.saveAsTextFile(sys.argv[2])
+  emit_merged_simple_variants(input_lines)
+  emit_non_simple_variants(input_lines)
 
   sc.stop()
