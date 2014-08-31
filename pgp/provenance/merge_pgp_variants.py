@@ -132,7 +132,7 @@ def HasAlternate(fields):
 def MapRecord(fields):
   """Emit one or more key/value pairs for the record.
 
-  Here we are using the same key as the Variant Store import _expect_
+  Here we are using the same key as the Variant Store import _except_
   that we use one value from alternate_bases and emit multiple records
   if alternate_bases has more than one value.
   """
