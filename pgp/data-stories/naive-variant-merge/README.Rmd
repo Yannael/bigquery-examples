@@ -31,7 +31,7 @@ DisplayAndDispatchQuery <- function(queryUri) {
 }
 ```
 
-Variant Level Fields before the merge
+Variant Level Fields before the merge:
 ```{r echo=FALSE, message=FALSE, warning=FALSE, error=FALSE, comment=NA}
 result <- DisplayAndDispatchQuery("../../sql/naive-variant-merge/variant-level-fields-prior-to-merge.sql")
 ```
@@ -39,10 +39,38 @@ result <- DisplayAndDispatchQuery("../../sql/naive-variant-merge/variant-level-f
 print(xtable(result, digits=6), type="html", include.rownames=F)
 ```
 
-Variant Level Fields before the merge
+Counts of bi-allelic and multi-allelic records and sample calls.
+```{r echo=FALSE, message=FALSE, warning=FALSE, error=FALSE, comment=NA}
+result <- DisplayAndDispatchQuery("../../sql/naive-variant-merge/counts-of-biallelic-and-multiallelic-calls.sql")
+```
+```{r}
+result
+result$num_multiallelic_variant_records / result$num_variant_records
+result$num_multiallelic_sample_calls / result$num_sample_calls
+```
+
+Variant Level Fields *after* the merge
 ```{r echo=FALSE, message=FALSE, warning=FALSE, error=FALSE, comment=NA}
 result <- DisplayAndDispatchQuery("../../sql/naive-variant-merge/variant-level-fields-after-merge.sql")
 ```
 ```{r echo=FALSE, message=FALSE, warning=FALSE, comment=NA, results="asis"}
 print(xtable(result, digits=6), type="html", include.rownames=F)
 ```
+
+Sample Level Fields before the merge:
+```{r echo=FALSE, message=FALSE, warning=FALSE, error=FALSE, comment=NA}
+result <- DisplayAndDispatchQuery("../../sql/naive-variant-merge/sample-level-fields-prior-to-merge.sql")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment=NA, results="asis"}
+print(xtable(result, digits=6), type="html", include.rownames=F)
+```
+
+Sample Level Fields *after* the merge:
+```{r echo=FALSE, message=FALSE, warning=FALSE, error=FALSE, comment=NA}
+result <- DisplayAndDispatchQuery("../../sql/naive-variant-merge/sample-level-fields-after-merge.sql")
+```
+```{r echo=FALSE, message=FALSE, warning=FALSE, comment=NA, results="asis"}
+print(xtable(result, digits=6), type="html", include.rownames=F)
+```
+
+
