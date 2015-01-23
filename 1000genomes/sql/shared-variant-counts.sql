@@ -4,13 +4,17 @@ SELECT
   COUNT(1) AS num_variants_shared_by_this_many_samples
 FROM (
   SELECT
-    SUM(IF(genotype.first_allele > 0
-        OR genotype.second_allele > 0,
-        1,
-        0)) WITHIN RECORD AS num_samples_with_variant
+    reference_name,
+    start,
+    END,
+    reference_bases,
+    GROUP_CONCAT(alternate_bases) WITHIN RECORD AS alt,
+    SUM(NOT EVERY(call.genotype <= 0)) WITHIN call AS num_samples_with_variant
   FROM
-    [google.com:biggene:1000genomes.variants1kG])
+    [genomics-public-data:1000_genomes.variants]
+  WHERE
+    reference_name NOT IN ("X", "Y", "MT"))
 GROUP BY
   num_samples_with_variant
 ORDER BY
-  num_samples_with_variant;
+  num_samples_with_variant
